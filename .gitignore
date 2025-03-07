@@ -1,0 +1,28 @@
+# Fichiers système Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Fichiers cachés et temporaires
+.DS_Store
+.cache/
+.config/
+.gradle/
+.idea/
+.vscode/
+.logs/
+*.log
+node_modules/
+target/
+build/
+out/
+
+# Fichiers spécifiques à VirtualBox, IntelliJ, Java et Python
+.VirtualBox/
+.m2/
+.venv/
+.env
+*.class
+*.pyc

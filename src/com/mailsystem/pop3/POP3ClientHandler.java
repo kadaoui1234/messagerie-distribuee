@@ -4,13 +4,11 @@ import java.io.*;
 import java.net.Socket;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 public class POP3ClientHandler implements Runnable {
     private Socket clientSocket;
+    private Properties users;
     private BufferedReader in;
     private PrintWriter out;
     private String user;
@@ -18,59 +16,109 @@ public class POP3ClientHandler implements Runnable {
     private List<File> emails;
     private List<File> markedForDeletion;
     private String timestamp; // Pour APOP
-    private Set<File> readMessages = new HashSet<>(); // Pour stocker les messages lus
-    private Set<File> recentMessages = new HashSet<>(); // Pour stocker les messages récents
 
     public POP3ClientHandler(Socket socket) {
         this.clientSocket = socket;
         this.authenticated = false;
+        this.users = new Properties();
         this.emails = new ArrayList<>();
         this.markedForDeletion = new ArrayList<>();
         this.timestamp = "<" + System.currentTimeMillis() + "@mailsystem>"; // Timestamp pour APOP
+
+
     }
+
 
     @Override
     public void run() {
         try {
             in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
             out = new PrintWriter(clientSocket.getOutputStream(), true);
-
             // Envoyer une réponse initiale au client avec le timestamp pour APOP
             out.println("+OK POP3 server ready " + timestamp);
-
             // Lire les commandes du client
             String inputLine;
             while ((inputLine = in.readLine()) != null) {
                 System.out.println("Received: " + inputLine);
 
                 // Normaliser la commande pour être insensible à la casse
-                String command = inputLine.toUpperCase();
+                String normalizedInput = inputLine.trim().toUpperCase();
 
-                if (command.startsWith("USER")) {
-                    handleUser(inputLine);
-                } else if (command.startsWith("PASS")) {
-                    handlePass(inputLine);
-                } else if (command.startsWith("APOP")) {
-                    handleApop(inputLine);
-                } else if (command.startsWith("STAT")) {
-                    handleStat();
-                } else if (command.startsWith("LIST")) {
-                    handleList(inputLine);
-                } else if (command.startsWith("RETR")) {
-                    handleRetr(inputLine);
-                } else if (command.startsWith("DELE")) {
-                    handleDele(inputLine);
-                } else if (command.startsWith("NOOP")) {
-                    handleNoop();
-                } else if (command.startsWith("RSET")) {
-                    handleRset();
-                } else if (command.startsWith("QUIT")) {
-                    handleQuit();
-                    break;
-                } else if (command.startsWith("TOP")) {
-                    handleTop(inputLine);
-                } else if (command.startsWith("UIDL")) {
-                    handleUidl(inputLine);
+                // Séparer la commande et ses arguments
+                String[] parts = normalizedInput.split("\\s+", 2); // Séparer en 2 parties : commande et arguments
+                String command = parts[0];
+                String arguments = (parts.length > 1) ? parts[1] : "";
+
+                // Valider et traiter les commandes
+                if (command.equals("USER")) {
+                    if (arguments.isEmpty()) {
+                        out.println("-ERR Invalid syntax: Usage: USER <username>");
+                    } else {
+                        handleUser(inputLine);
+                    }
+                } else if (command.equals("PASS")) {
+                        handlePass(inputLine);
+                } else if (command.equals("APOP")) {
+                    if (arguments.isEmpty()) {
+                        out.println("-ERR Invalid syntax: Usage: APOP <username> <digest>");
+                    } else {
+                        handleApop(inputLine); // Conserver l'input original pour le digest
+                    }
+                } else if (command.equals("STAT")) {
+                    if (!arguments.isEmpty()) {
+                        out.println("-ERR Invalid syntax: Usage: STAT");
+                    } else {
+                        handleStat();
+                    }
+                } else if (command.equals("LIST")) {
+                    if (arguments.isEmpty()) {
+                        handleList(""); // LIST sans arguments
+                    } else {
+                        handleList(inputLine); // LIST avec un numéro de message
+                    }
+                } else if (command.equals("RETR")) {
+                    if (arguments.isEmpty()) {
+                        out.println("-ERR Invalid syntax: Usage: RETR <message_number>");
+                    } else {
+                        handleRetr(inputLine);
+                    }
+                } else if (command.equals("DELE")) {
+                    if (arguments.isEmpty()) {
+                        out.println("-ERR Invalid syntax: Usage: DELE <message_number>");
+                    } else {
+                        handleDele(inputLine);
+                    }
+                } else if (command.equals("NOOP")) {
+                    if (!arguments.isEmpty()) {
+                        out.println("-ERR Invalid syntax: Usage: NOOP");
+                    } else {
+                        handleNoop();
+                    }
+                } else if (command.equals("RSET")) {
+                    if (!arguments.isEmpty()) {
+                        out.println("-ERR Invalid syntax: Usage: RSET");
+                    } else {
+                        handleRset();
+                    }
+                } else if (command.equals("QUIT")) {
+                    if (!arguments.isEmpty()) {
+                        out.println("-ERR Invalid syntax: Usage: QUIT");
+                    } else {
+                        handleQuit();
+                        break; // Quitter la boucle après QUIT
+                    }
+                } else if (command.equals("TOP")) {
+                    if (arguments.isEmpty()) {
+                        out.println("-ERR Invalid syntax: Usage: TOP <message_number> <n>");
+                    } else {
+                        handleTop(arguments);
+                    }
+                } else if (command.equals("UIDL")) {
+                    if (arguments.isEmpty()) {
+                        handleUidl(""); // UIDL sans arguments
+                    } else {
+                        handleUidl(inputLine); // UIDL avec un numéro de message
+                    }
                 } else {
                     out.println("-ERR Command not recognized");
                 }
@@ -85,14 +133,12 @@ public class POP3ClientHandler implements Runnable {
             }
         }
     }
-
     private void handleUser(String inputLine) {
         user = inputLine.substring(5).trim();
         File userDir = new File("mailserver/" + user);
         if (userDir.exists() && userDir.isDirectory()) {
             out.println("+OK User accepted");
             loadEmails(userDir); // Charger les emails de l'utilisateur
-            initializeRecentMessages(); // Initialiser les messages récents
         } else {
             out.println("-ERR User not found");
         }
@@ -136,20 +182,20 @@ public class POP3ClientHandler implements Runnable {
             return;
         }
 
-        int unreadMessageCount = 0;
-        long unreadMaildropSize = 0;
+        int messageCount = 0;
+        long maildropSize = 0;
 
-        // Parcourir les emails et ignorer ceux marqués pour suppression ou déjà lus
+        // Parcourir les emails et ignorer ceux marqués pour suppression
         for (int i = 0; i < emails.size(); i++) {
             File emailFile = emails.get(i);
-            if (!markedForDeletion.contains(emailFile) && !readMessages.contains(emailFile)) {
-                unreadMessageCount++;
-                unreadMaildropSize += emailFile.length();
+            if (!markedForDeletion.contains(emailFile)) {
+                messageCount++;
+                maildropSize += emailFile.length();
             }
         }
 
-        // Réponse au format "+OK <nombre de messages non lus> <taille du maildrop non lu>"
-        out.println("+OK " + unreadMessageCount + " " + unreadMaildropSize);
+        // Réponse au format "+OK <nombre de messages> <taille du maildrop>"
+        out.println("+OK " + messageCount + " " + maildropSize);
     }
 
     private void handleList(String inputLine) {
@@ -160,17 +206,22 @@ public class POP3ClientHandler implements Runnable {
 
         String[] parts = inputLine.split(" ");
         if (parts.length == 1) {
-            // Lister tous les messages récents
+            // Liste complète des messages non supprimés (triés du plus ancien au plus récent)
+            int messageCount = 0;
+            long maildropSize = 0;
+
             out.println("+OK"); // Début de la réponse
             for (int i = 0; i < emails.size(); i++) {
                 File emailFile = emails.get(i);
-                if (recentMessages.contains(emailFile) && !markedForDeletion.contains(emailFile)) {
+                if (!markedForDeletion.contains(emailFile)) {
+                    messageCount++;
+                    maildropSize += emailFile.length();
                     out.println((i + 1) + " " + emailFile.length());
                 }
             }
             out.println("."); // Fin de la réponse
         } else if (parts.length == 2) {
-            // Taille d'un message spécifique (s'il est récent)
+            // Taille d'un message spécifique
             try {
                 int messageNumber = Integer.parseInt(parts[1]);
                 if (messageNumber < 1 || messageNumber > emails.size()) {
@@ -179,9 +230,7 @@ public class POP3ClientHandler implements Runnable {
                 }
 
                 File emailFile = emails.get(messageNumber - 1);
-                if (!recentMessages.contains(emailFile)) {
-                    out.println("-ERR Message is not recent");
-                } else if (markedForDeletion.contains(emailFile)) {
+                if (markedForDeletion.contains(emailFile)) {
                     out.println("-ERR Message marked for deletion");
                 } else {
                     out.println("+OK " + messageNumber + " " + emailFile.length());
@@ -212,9 +261,6 @@ public class POP3ClientHandler implements Runnable {
                 out.println("-ERR Message marked for deletion");
                 return;
             }
-
-            // Marquer le message comme non récent
-            recentMessages.remove(emailFile);
 
             // Envoyer le contenu du message
             out.println("+OK");
@@ -251,9 +297,8 @@ public class POP3ClientHandler implements Runnable {
                 return;
             }
 
-            // Marquer le message pour suppression et le retirer des messages récents
+            // Marquer le message pour suppression
             markedForDeletion.add(emailFile);
-            recentMessages.remove(emailFile);
             out.println("+OK Message marked for deletion");
         } catch (NumberFormatException e) {
             out.println("-ERR Invalid message number");
@@ -277,11 +322,7 @@ public class POP3ClientHandler implements Runnable {
 
         // Réinitialiser les messages marqués pour suppression
         markedForDeletion.clear();
-
-        // Réinitialiser les messages récents
-        initializeRecentMessages();
-
-        out.println("+OK All deletions reset and recent messages restored");
+        out.println("+OK All deletions reset");
     }
 
     private void handleQuit() {
@@ -342,7 +383,7 @@ public class POP3ClientHandler implements Runnable {
 
         String[] parts = inputLine.split(" ");
         if (parts.length == 1) {
-            // UIDL sans argument : liste tous les messages
+            // UIDL sans argument : liste tous les messages (triés du plus ancien au plus récent)
             out.println("+OK");
             for (int i = 0; i < emails.size(); i++) {
                 out.println((i + 1) + " " + emails.get(i).getName());
@@ -362,11 +403,13 @@ public class POP3ClientHandler implements Runnable {
             }
         }
     }
-
     private void loadEmails(File userDir) {
         emails.clear();
         File[] files = userDir.listFiles();
         if (files != null) {
+            // Trier les fichiers par date de modification (du plus ancien au plus récent)
+            Arrays.sort(files, Comparator.comparingLong(File::lastModified));
+
             for (File file : files) {
                 if (file.isFile()) {
                     emails.add(file);
@@ -374,16 +417,6 @@ public class POP3ClientHandler implements Runnable {
             }
         }
     }
-
-    private void initializeRecentMessages() {
-        recentMessages.clear();
-        for (File emailFile : emails) {
-            if (!readMessages.contains(emailFile) && !markedForDeletion.contains(emailFile)) {
-                recentMessages.add(emailFile);
-            }
-        }
-    }
-
     private String md5(String input) {
         try {
             MessageDigest md = MessageDigest.getInstance("MD5");
